@@ -1,13 +1,13 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { checkSession } from "./lib/api/serverApi";
-import { parse } from "cookie";
 
 const privateRoutes = ["/profile", "/notes"];
 const publicRoutes = ["/sign-in", "/sign-up"];
 
 export async function proxy(request: NextRequest) {
   const cookieStore = await cookies();
+
   const accessToken = cookieStore.get("accessToken")?.value;
   const refreshToken = cookieStore.get("refreshToken")?.value;
 
@@ -16,63 +16,71 @@ export async function proxy(request: NextRequest) {
   const isPrivateRoute = privateRoutes.some((route) =>
     pathname.startsWith(route),
   );
+
   const isPublicRoute = publicRoutes.some((route) =>
     pathname.startsWith(route),
   );
 
-  if (!accessToken) {
-    if (refreshToken) {
-      try {
-        const data = await checkSession();
-        const setCookie = data.headers["set-cookie"];
+  let isAuthenticated = !!accessToken;
 
-        if (setCookie) {
-          const cookieArray = Array.isArray(setCookie)
-            ? setCookie
-            : [setCookie];
-          for (const cookieStr of cookieArray) {
-            const parsed = parse(cookieStr);
-            const options = {
-              expires: parsed.Expires ? new Date(parsed.Expires) : undefined,
-              path: parsed.Path || "/",
-              maxAge: Number(parsed["Max-Age"]),
-            };
-            if (parsed.accessToken)
-              cookieStore.set("accessToken", parsed.accessToken, options);
-            if (parsed.refreshToken)
-              cookieStore.set("refreshToken", parsed.refreshToken, options);
-          }
+  let newTokens: {
+    accessToken?: string;
+    refreshToken?: string;
+  } | null = null;
 
-          if (isPublicRoute) {
-            return NextResponse.redirect(new URL("/", request.url), {
-              headers: { Cookie: cookieStore.toString() },
-            });
-          }
+  if (!accessToken && refreshToken) {
+    try {
+      const data = await checkSession();
 
-          if (isPrivateRoute) {
-            return NextResponse.next({
-              headers: { Cookie: cookieStore.toString() },
-            });
-          }
-        }
-      } catch (error) {
-        cookieStore.delete("accessToken");
-        cookieStore.delete("refreshToken");
+      if (data?.data) {
+        isAuthenticated = true;
+
+        newTokens = {
+          accessToken: data.data.accessToken,
+          refreshToken: data.data.refreshToken,
+        };
       }
+    } catch {
+      isAuthenticated = false;
     }
-
-    if (isPublicRoute) return NextResponse.next();
-    if (isPrivateRoute)
-      return NextResponse.redirect(new URL("/sign-in", request.url));
-    }
-    
-  if (isPublicRoute) {
-    return NextResponse.redirect(new URL("/", request.url));
   }
 
-  if (isPrivateRoute) {
-    return NextResponse.next();
+  let response: NextResponse;
+
+  if (!isAuthenticated && isPrivateRoute) {
+    response = NextResponse.redirect(new URL("/sign-in", request.url));
   }
+
+  else if (isAuthenticated && isPublicRoute) {
+    response = NextResponse.redirect(new URL("/", request.url));
+  }
+
+  else {
+    response = NextResponse.next();
+  }
+
+  if (newTokens) {
+    const cookieOptions = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax" as const,
+      path: "/",
+    };
+
+    if (newTokens.accessToken) {
+      response.cookies.set("accessToken", newTokens.accessToken, cookieOptions);
+    }
+
+    if (newTokens.refreshToken) {
+      response.cookies.set(
+        "refreshToken",
+        newTokens.refreshToken,
+        cookieOptions,
+      );
+    }
+  }
+
+  return response;
 }
 
 export const config = {
