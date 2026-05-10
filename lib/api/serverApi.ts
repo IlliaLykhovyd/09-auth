@@ -48,14 +48,12 @@ export const getMe = async (): Promise<User | null> => {
   }
 };
 
-export const checkSession = async (): Promise<User | null> => {
-  try {
-    const headers = await getAuthHeaders();
-    const response = await nextServer.get<User>("/auth/session", {
-      headers,
-    });
-    return response.data;
-  } catch (error) {
-    return null;
-  }
+export const checkSession = async () => {
+  const cookieStore = await cookies();
+  const response = await nextServer.get("/auth/session", {
+    headers: {
+      Cookie: cookieStore.toString(),
+    },
+  });
+  return response;
 };
